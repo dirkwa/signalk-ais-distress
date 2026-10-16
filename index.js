@@ -131,7 +131,10 @@ module.exports = function makePlugin(app) {
   // clearBroadcast). Survival beacons are all distress-priority.
   const ackOne = (event) => {
     if (event.ownMob) clearOwnMob(event);
-    store.markCleared((e) => e.id === event.id, new Date().toISOString());
+    store.markCleared(
+      (e) => e.id === event.id || (event.ownMob && e.ownMob && e.mmsi === event.mmsi),
+      new Date().toISOString()
+    );
   };
 
   const notifier = createNotifier({
@@ -240,10 +243,10 @@ module.exports = function makePlugin(app) {
     if (!ownMobAcks.has(path)) {
       ownMobAcks.add(path);
       app.registerPutHandler('vessels.self', path, () => {
-        const current = store.list().find((e) => e.ownMob && !e.clearedAt && ownMobPath(e) === path);
-        if (current) {
-          notifier.clear(receivedPath('distress', 'ais', current.id));
-          ackOne(current);
+        const current = activeOwnMobs(event.mmsi);
+        if (current.length) {
+          for (const e of current) notifier.clear(receivedPath('distress', 'ais', e.id));
+          ackOne(current[0]);
         } else {
           app.handleMessage(plugin.id, { updates: [{ values: [{ path, value: null }] }] });
         }
@@ -258,8 +261,13 @@ module.exports = function makePlugin(app) {
 
   // Once raised, our own MOB follows the beacon until someone clears it, even
   // if the beacon drifts out of range.
+  // A beacon unheard for longer than the dedupe window comes back as a new
+  // stored event, so own-MOB state is decided per MMSI, not per event.
+  const activeOwnMobs = (mmsi) => store.list().filter((e) => e.ownMob && !e.clearedAt && e.mmsi === mmsi);
+
   function updateOwnMob(event) {
-    if (event.clearedAt || !(event.ownMob || isNearby(event.position))) return;
+    if (event.clearedAt) return;
+    if (!(event.ownMob || activeOwnMobs(event.mmsi).length || isNearby(event.position))) return;
     if (!event.ownMob) store.update(event.id, { ownMob: true });
     raiseOwnMob(refreshMessage(event));
   }
@@ -527,6 +535,8 @@ module.exports = function makePlugin(app) {
 
   plugin.stop = function () {
     started = false;
+    // The server unregisters a plugin's PUT handlers on stop, so a restart must register them again.
+    ownMobAcks.clear();
     clearTimeout(reannounceTimer);
     if (positionUnsub) positionUnsub();
     positionUnsub = null;

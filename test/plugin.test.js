@@ -446,6 +446,24 @@ test('our own MOB is re-raised after a restart', async () => {
   second.stop();
 });
 
+test('our own MOB can still be cleared after the same instance restarts', async () => {
+  const app = mockApp();
+  const mmsi = MOB_CTX.split(':').pop();
+  const plugin = start(app);
+  pushPosition(app, MOB_CTX, NEAR);
+  plugin.stop();
+
+  // The server unregisters a plugin's PUT handlers when it stops.
+  app.putHandlers = {};
+  plugin.start({ logbookToken: '', reannounceDelayMs: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const handler = app.putHandlers[`vessels.self:notifications.mob.${mmsi}`];
+  assert.ok(handler, 'own MOB PUT handler registered again');
+  handler();
+  assert.equal(ownMobFor(app, mmsi).at(-1).delta.updates[0].values[0].value, null);
+  plugin.stop();
+});
+
 // A beacon isn't necessarily a vessel (a personal EPIRB/SART is a device), and
 // SART/EPIRB carry no nature-of-distress — so a non-MOB beacon surfaces under the
 // maritime-priority leaf notifications.distress, not an invented device-type leaf.
